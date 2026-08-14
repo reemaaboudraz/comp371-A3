@@ -1,10 +1,18 @@
+/**
+ * Reema Aboudraz - 40253549
+ * Wissem Oumsalem - 40291712  
+ * Assignment 3, COMP 371 
+ * Summer 2026
+ * Professor Nagi Basha
+ */
+
+
 import bpy
 import math
 import os
 from mathutils import Vector
 
 # ============================================================
-# COMP 371 - Assignment 3
 # Blender chair generator
 # ------------------------------------------------------------
 # Run this file inside Blender's Scripting workspace.
