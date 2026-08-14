@@ -5,7 +5,6 @@
 
 | Student | Student ID |
 |---|---:|
-| Omar El Akrae | 40252799 |
 | Reema Aboudraz | 40253549 |
 | Wissem Oumsalem | 40291712 |
 
