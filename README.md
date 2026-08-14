@@ -96,6 +96,4 @@ The program also accepts a custom OBJ path:
 - `glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)` provides the required OpenGL wireframe view.
 - The model matrix is built as translation, rotation, and scaling and then combined as `Projection * View * Model`.
 
-## Files you still create yourself for submission
 
-The code generates the `.blend` and `.obj`. You still need to take your own screenshots and create the PDFs/report required by the assignment.
