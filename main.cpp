@@ -1,3 +1,11 @@
+/**
+ * Reema Aboudraz - 40253549
+ * Wissem Oumsalem - 40291712  
+ * Assignment 3, COMP 371 
+ * Summer 2026
+ * Professor Nagi Basha
+ */
+
 #include <GL/glew.h>              // Loads modern OpenGL function pointers.
 #include <GLFW/glfw3.h>            // Creates the window and handles keyboard input.
 #include <glm/glm.hpp>             // Provides vectors and matrices used by OpenGL math.
