@@ -1,634 +1,581 @@
-/**
- * COMP 371 - Computer Graphics
- * Assignment 3 - Summer 2026
- *
- * Team members:
- *   Reema Aboudraz  - 40253549
- *   Wissem Oumsalem - 40291712
- *
- * Purpose:
- *   Load the chair OBJ exported from Blender, display it in OpenGL as a
- *   wireframe, and apply keyboard-controlled translation, rotation, and
- *   scaling.  The imported model is centered before rendering so rotation is
- *   performed around the chair itself and the chair stays in place on screen.
- */
+// COMP 371 - Computer Graphics
+// Assignment 3 - Summer 2026
+//
+// Team Members:
+// Reema Aboudraz  - 40253549
+// Wissem Oumsalem - 40291712
 
-#include <GL/glew.h>                         // Loads modern OpenGL function pointers.
-#include <GLFW/glfw3.h>                      // Creates the window and handles keyboard input.
-#include <glm/glm.hpp>                       // Provides vectors and matrices.
-#include <glm/gtc/matrix_transform.hpp>      // Provides translate, rotate, scale, lookAt, perspective.
-#include <glm/gtc/type_ptr.hpp>              // Converts GLM matrices for OpenGL uniform upload.
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
 
-#include <algorithm>                         // std::max and std::min.
-#include <cstddef>                           // std::size_t.
-#include <filesystem>                        // Portable file-path handling for chair.obj.
-#include <fstream>                           // Reads the OBJ file.
-#include <iostream>                          // Console output and error messages.
-#include <limits>                            // Numeric limits used by model normalization.
-#include <sstream>                           // Parses OBJ lines.
-#include <string>                            // Stores paths, tokens, and shader text.
-#include <vector>                            // Dynamic storage for loaded geometry.
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
-// -----------------------------------------------------------------------------
-// Window settings.
-// -----------------------------------------------------------------------------
-constexpr int WINDOW_WIDTH = 1000;           // Initial OpenGL window width.
-constexpr int WINDOW_HEIGHT = 800;           // Initial OpenGL window height.
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
 
-// -----------------------------------------------------------------------------
-// Keyboard-controlled transformation state.
-// These keys intentionally match Assignment 2.
-// -----------------------------------------------------------------------------
-glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);   // W/S/A/D modify X/Y translation.
-glm::vec3 gScale(1.0f, 1.0f, 1.0f);         // R/F uniformly enlarge/shrink the chair.
-float gRotationZ = 0.0f;                     // Q/E rotate around the Z axis in degrees.
 
-constexpr float TRANSLATION_STEP = 0.12f;    // Translation amount for each key event.
-constexpr float ROTATION_STEP = 30.0f;       // Required assignment-style 30-degree step.
-constexpr float SCALE_STEP = 0.10f;          // Scale amount for each key event.
-constexpr float MIN_SCALE = 0.10f;           // Prevents zero or negative scale.
+// Window size
+const int WIDTH = 800;
+const int HEIGHT = 600;
 
-// -----------------------------------------------------------------------------
-// One vertex contains only a 3D position.  The OpenGL requirement is wireframe,
-// so normals, colors, and texture coordinates are not required for rendering.
-// -----------------------------------------------------------------------------
+
+// Transformation values
+float positionX = 0.0f;
+float positionY = 0.0f;
+
+float rotationZ = 0.0f;
+
+float scaleValue = 1.0f;
+
+
+// Same transformation amounts as Assignment 2
+const float MOVE_DISTANCE = 0.2f;
+const float ROTATION_ANGLE = 30.0f;
+const float SCALE_AMOUNT = 0.1f;
+
+
+// Stores one vertex position
 struct Vertex
 {
-    float x;                                 // X position.
-    float y;                                 // Y position.
-    float z;                                 // Z position.
+    float x;
+    float y;
+    float z;
 };
 
-// -----------------------------------------------------------------------------
-// Shader helpers.
-// -----------------------------------------------------------------------------
-GLuint compileShader(GLenum shaderType, const char* source)
-{
-    GLuint shader = glCreateShader(shaderType);          // Create an empty shader object.
-    glShaderSource(shader, 1, &source, nullptr);         // Attach GLSL source code.
-    glCompileShader(shader);                             // Compile source using the OpenGL driver.
 
-    GLint compiled = GL_FALSE;                           // Receives the compilation result.
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled); // Ask OpenGL whether compilation succeeded.
 
-    if (compiled != GL_TRUE)
+//vertex shader
+const char* vertexShaderSource = R"glsl(
+
+    #version 330 core
+
+    layout(location = 0) in vec3 aPos;
+
+    uniform mat4 MVP;
+
+    void main()
     {
-        GLint logLength = 0;                             // Number of characters in the driver log.
-        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
-
-        // Allocate at least one byte so log.data() is always valid.
-        std::vector<char> log(static_cast<std::size_t>(std::max(1, logLength)), '\0');
-        glGetShaderInfoLog(shader, logLength, nullptr, log.data());
-
-        std::cerr << "Shader compilation failed:\n" << log.data() << '\n';
-        glDeleteShader(shader);                          // Release the failed GPU object.
-        return 0;                                        // 0 signals failure to the caller.
+        gl_Position = MVP * vec4(aPos, 1.0);
     }
 
-    return shader;                                       // Return the successfully compiled shader.
+)glsl";
+
+
+//fragment shader
+const char* fragmentShaderSource = R"glsl(
+
+    #version 330 core
+
+    out vec4 FragColor;
+
+    void main()
+    {
+        FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    }
+
+)glsl";
+
+
+
+//create and compile one shader
+GLuint compileShader(GLenum type, const char* source)
+{
+    GLuint shader = glCreateShader(type);
+
+    glShaderSource(shader, 1, &source, NULL);
+    glCompileShader(shader);
+
+    int success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+
+    if (!success)
+    {
+        std::cout << "Error compiling shader." << std::endl;
+    }
+
+    return shader;
 }
 
+
+//create shader program
 GLuint createShaderProgram()
 {
-    // Vertex shader: transform each OBJ vertex from model space to clip space.
-    const char* vertexShaderSource = R"GLSL(
-        #version 330 core
-        layout(location = 0) in vec3 aPosition;
-        uniform mat4 uMVP;
+    GLuint vertexShader =
+        compileShader(GL_VERTEX_SHADER, vertexShaderSource);
 
-        void main()
-        {
-            gl_Position = uMVP * vec4(aPosition, 1.0);
-        }
-    )GLSL";
+    GLuint fragmentShader =
+        compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
 
-    // Fragment shader: output one light color for all visible wireframe lines.
-    const char* fragmentShaderSource = R"GLSL(
-        #version 330 core
-        out vec4 FragColor;
+    GLuint program = glCreateProgram();
 
-        void main()
-        {
-            FragColor = vec4(0.94, 0.94, 0.96, 1.0);
-        }
-    )GLSL";
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
 
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
+    glLinkProgram(program);
 
-    if (vertexShader == 0 || fragmentShader == 0)
-    {
-        if (vertexShader != 0)
-        {
-            glDeleteShader(vertexShader);
-        }
-        if (fragmentShader != 0)
-        {
-            glDeleteShader(fragmentShader);
-        }
-        return 0;
-    }
-
-    GLuint program = glCreateProgram();                  // Create a linkable GPU program.
-    glAttachShader(program, vertexShader);               // Attach vertex stage.
-    glAttachShader(program, fragmentShader);             // Attach fragment stage.
-    glLinkProgram(program);                              // Link both stages together.
-
-    GLint linked = GL_FALSE;
-    glGetProgramiv(program, GL_LINK_STATUS, &linked);
-
-    if (linked != GL_TRUE)
-    {
-        GLint logLength = 0;
-        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
-        std::vector<char> log(static_cast<std::size_t>(std::max(1, logLength)), '\0');
-        glGetProgramInfoLog(program, logLength, nullptr, log.data());
-
-        std::cerr << "Shader program linking failed:\n" << log.data() << '\n';
-        glDeleteProgram(program);
-        program = 0;
-    }
-
-    // Once linked, the separate shader objects are no longer required.
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
     return program;
 }
 
-// -----------------------------------------------------------------------------
-// OBJ parsing helpers.
-// -----------------------------------------------------------------------------
-bool parseVertexIndex(const std::string& token, int vertexCount, int& resolvedIndex)
+
+
+// Get the vertex number from an obj face value
+int getVertexIndex(const std::string& value)
 {
-    // OBJ face elements may look like: 12, 12/4, 12//9, or 12/4/9.
-    const std::size_t slash = token.find('/');
-    const std::string indexText = token.substr(0, slash);
+    std::size_t slashPosition = value.find('/');
 
-    if (indexText.empty())
-    {
-        return false;
-    }
+    std::string number;
 
-    int objIndex = 0;
-    try
+    if (slashPosition == std::string::npos)
     {
-        objIndex = std::stoi(indexText);                 // Convert the text index to an integer.
-    }
-    catch (const std::exception&)
-    {
-        return false;                                    // Reject malformed face tokens safely.
-    }
-
-    // OBJ index 0 is invalid.  Positive indices are 1-based.  Negative indices
-    // are relative to the most recently defined vertex (-1 means last vertex).
-    if (objIndex == 0)
-    {
-        return false;
-    }
-
-    if (objIndex > 0)
-    {
-        resolvedIndex = objIndex - 1;
+        number = value;
     }
     else
     {
-        resolvedIndex = vertexCount + objIndex;
+        number = value.substr(0, slashPosition);
     }
 
-    return resolvedIndex >= 0 && resolvedIndex < vertexCount;
+    return std::stoi(number) - 1;
 }
 
-bool loadOBJ(const std::filesystem::path& path, std::vector<Vertex>& triangleVertices)
+
+//load vertices and triangular faces from the obj file
+bool loadOBJ(
+    const std::string& filename,
+    std::vector<Vertex>& vertices)
 {
-    std::ifstream file(path);                            // Open the Blender-exported OBJ file.
+    std::ifstream file(filename);
     if (!file.is_open())
     {
-        std::cerr << "Could not open OBJ file: " << path << '\n';
+        std::cout << "Could not open " << filename << std::endl;
         return false;
     }
 
-    std::vector<glm::vec3> positions;                    // Raw OBJ 'v' positions.
-    std::string line;                                    // One file line at a time.
-    std::size_t lineNumber = 0;
+
+    //vertices read directly from the OBJ
+    std::vector<glm::vec3> positions;
+    std::string line;
 
     while (std::getline(file, line))
     {
-        ++lineNumber;
+        std::stringstream stream(line);
+        std::string type;
+        stream >> type;
 
-        if (line.empty() || line[0] == '#')
+
+        //vertex position
+        if (type == "v")
         {
-            continue;                                    // Ignore blank lines and comments.
-        }
+            glm::vec3 position;
 
-        std::istringstream stream(line);
-        std::string prefix;
-        stream >> prefix;
+            stream >> position.x
+                   >> position.y
+                   >> position.z;
 
-        if (prefix == "v")
-        {
-            glm::vec3 position(0.0f);
-            if (!(stream >> position.x >> position.y >> position.z))
-            {
-                std::cerr << "Malformed vertex on OBJ line " << lineNumber << ".\n";
-                return false;
-            }
             positions.push_back(position);
         }
-        else if (prefix == "f")
+
+
+        //triangle face
+        else if (type == "f")
         {
-            std::vector<int> faceIndices;
-            std::string token;
+            std::string v1;
+            std::string v2;
+            std::string v3;
 
-            while (stream >> token)
-            {
-                int index = -1;
-                if (!parseVertexIndex(token, static_cast<int>(positions.size()), index))
-                {
-                    std::cerr << "Invalid face index on OBJ line " << lineNumber << ".\n";
-                    return false;
-                }
-                faceIndices.push_back(index);
-            }
+            stream >> v1 >> v2 >> v3;
 
-            if (faceIndices.size() < 3)
-            {
-                std::cerr << "Face with fewer than 3 vertices on OBJ line " << lineNumber << ".\n";
-                return false;
-            }
+            int index1 = getVertexIndex(v1);
+            int index2 = getVertexIndex(v2);
+            int index3 = getVertexIndex(v3);
 
-            // Triangulate any polygon as a triangle fan:
-            // (0,1,2), (0,2,3), (0,3,4), ...
-            for (std::size_t i = 1; i + 1 < faceIndices.size(); ++i)
-            {
-                const glm::vec3& a = positions[faceIndices[0]];
-                const glm::vec3& b = positions[faceIndices[i]];
-                const glm::vec3& c = positions[faceIndices[i + 1]];
+            glm::vec3 p1 = positions[index1];
+            glm::vec3 p2 = positions[index2];
+            glm::vec3 p3 = positions[index3];
 
-                triangleVertices.push_back({a.x, a.y, a.z});
-                triangleVertices.push_back({b.x, b.y, b.z});
-                triangleVertices.push_back({c.x, c.y, c.z});
-            }
+            vertices.push_back({p1.x, p1.y, p1.z});
+            vertices.push_back({p2.x, p2.y, p2.z});
+            vertices.push_back({p3.x, p3.y, p3.z});
         }
-
-        // All other OBJ records (vt, vn, usemtl, mtllib, o, s, etc.) are not
-        // needed by this wireframe renderer and are safely ignored.
     }
 
-    if (positions.empty())
-    {
-        std::cerr << "OBJ file contains no vertex positions.\n";
-        return false;
-    }
 
-    if (triangleVertices.empty())
-    {
-        std::cerr << "OBJ file contains no usable faces.\n";
-        return false;
-    }
+    file.close();
 
     return true;
 }
 
-// -----------------------------------------------------------------------------
-// Centering is what makes rotation occur around the chair itself rather than
-// making the chair orbit around a distant world-space origin.
-// -----------------------------------------------------------------------------
-void normalizeModel(std::vector<Vertex>& vertices)
+
+
+//center the model at the origin.
+void centerModel(std::vector<Vertex>& vertices)
 {
-    glm::vec3 minimum(
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max()
-    );
+    if (vertices.empty())
+    {
+        return;
+    }
 
-    glm::vec3 maximum(
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest()
-    );
+    float minX = vertices[0].x;
+    float maxX = vertices[0].x;
 
+    float minY = vertices[0].y;
+    float maxY = vertices[0].y;
+
+    float minZ = vertices[0].z;
+    float maxZ = vertices[0].z;
+
+
+    //find the minimum and maximum coordinates
     for (const Vertex& vertex : vertices)
     {
-        const glm::vec3 p(vertex.x, vertex.y, vertex.z);
-        minimum = glm::min(minimum, p);
-        maximum = glm::max(maximum, p);
+        if (vertex.x < minX) minX = vertex.x;
+        if (vertex.x > maxX) maxX = vertex.x;
+
+        if (vertex.y < minY) minY = vertex.y;
+        if (vertex.y > maxY) maxY = vertex.y;
+
+        if (vertex.z < minZ) minZ = vertex.z;
+        if (vertex.z > maxZ) maxZ = vertex.z;
     }
 
-    const glm::vec3 center = (minimum + maximum) * 0.5f;
-    const glm::vec3 size = maximum - minimum;
-    const float largestDimension = std::max({size.x, size.y, size.z});
 
-    // Fit the largest model dimension into approximately three world units.
-    const float normalizationScale = (largestDimension > 0.0f)
-        ? (3.0f / largestDimension)
-        : 1.0f;
+    //find the center
+    float centerX = (minX + maxX) / 2.0f;
+    float centerY = (minY + maxY) / 2.0f;
+    float centerZ = (minZ + maxZ) / 2.0f;
 
+
+    //move every vertex so that the model is centered
     for (Vertex& vertex : vertices)
     {
-        glm::vec3 p(vertex.x, vertex.y, vertex.z);
-        p = (p - center) * normalizationScale;
-        vertex.x = p.x;
-        vertex.y = p.y;
-        vertex.z = p.z;
+        vertex.x -= centerX;
+        vertex.y -= centerY;
+        vertex.z -= centerZ;
     }
 }
 
-// -----------------------------------------------------------------------------
-// Find chair.obj reliably whether the executable is started from PowerShell,
-// Visual Studio, or a build directory.
-// -----------------------------------------------------------------------------
-std::filesystem::path findOBJPath(int argc, char* argv[])
+
+// keyboard controls
+void keyCallback(
+    GLFWwindow* window,
+    int key,
+    int scancode,
+    int action,
+    int mods)
 {
-    if (argc > 1)
+    if (action != GLFW_PRESS)
     {
-        return std::filesystem::path(argv[1]);           // Explicit user-supplied path wins.
+        return;
     }
 
-    const std::filesystem::path executablePath = std::filesystem::absolute(argv[0]);
-    const std::filesystem::path executableDir = executablePath.parent_path();
 
-    const std::vector<std::filesystem::path> candidates = {
-        std::filesystem::current_path() / "chair.obj",
-        executableDir / "chair.obj",
-        executableDir / ".." / "chair.obj",
-        executableDir / ".." / ".." / "chair.obj",
-        executableDir / ".." / ".." / ".." / "chair.obj"
-    };
-
-    for (const auto& candidate : candidates)
+    // to close program
+    if (key == GLFW_KEY_ESCAPE)
     {
-        std::error_code error;
-        if (std::filesystem::exists(candidate, error) && !error)
+        glfwSetWindowShouldClose(window, true);
+    }
+
+
+    // for translation
+    else if (key == GLFW_KEY_W)
+    {
+        positionY += MOVE_DISTANCE;
+    }
+
+    else if (key == GLFW_KEY_S)
+    {
+        positionY -= MOVE_DISTANCE;
+    }
+
+    else if (key == GLFW_KEY_A)
+    {
+        positionX -= MOVE_DISTANCE;
+    }
+
+    else if (key == GLFW_KEY_D)
+    {
+        positionX += MOVE_DISTANCE;
+    }
+
+
+    // for rotation
+    else if (key == GLFW_KEY_Q)
+    {
+        rotationZ += ROTATION_ANGLE;
+    }
+
+    else if (key == GLFW_KEY_E)
+    {
+        rotationZ -= ROTATION_ANGLE;
+    }
+
+
+    // for scaling
+    else if (key == GLFW_KEY_R)
+    {
+        scaleValue += SCALE_AMOUNT;
+    }
+
+    else if (key == GLFW_KEY_F)
+    {
+        scaleValue -= SCALE_AMOUNT;
+
+        if (scaleValue < 0.1f)
         {
-            return std::filesystem::weakly_canonical(candidate, error);
+            scaleValue = 0.1f;
         }
     }
-
-    // Return the normal expected name so loadOBJ() prints a clear error path.
-    return std::filesystem::current_path() / "chair.obj";
 }
 
-// -----------------------------------------------------------------------------
-// Keyboard input: same keys as Assignment 2.
-// -----------------------------------------------------------------------------
-void keyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/)
+
+// Main ------------------------------------
+int main()
 {
-    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+    //initialize GLFW
+    if (!glfwInit())
     {
-        return;                                          // Ignore key-release events.
+        std::cout << "Could not initialize GLFW." << std::endl;
+        return -1;
     }
 
-    switch (key)
-    {
-        case GLFW_KEY_ESCAPE:
-            glfwSetWindowShouldClose(window, GLFW_TRUE); // ESC closes the application.
-            break;
 
-        case GLFW_KEY_W:
-            gTranslation.y += TRANSLATION_STEP;          // Move up.
-            break;
-
-        case GLFW_KEY_S:
-            gTranslation.y -= TRANSLATION_STEP;          // Move down.
-            break;
-
-        case GLFW_KEY_A:
-            gTranslation.x -= TRANSLATION_STEP;          // Move left.
-            break;
-
-        case GLFW_KEY_D:
-            gTranslation.x += TRANSLATION_STEP;          // Move right.
-            break;
-
-        case GLFW_KEY_Q:
-            gRotationZ += ROTATION_STEP;                 // Rotate +30 degrees around Z.
-            break;
-
-        case GLFW_KEY_E:
-            gRotationZ -= ROTATION_STEP;                 // Rotate -30 degrees around Z.
-            break;
-
-        case GLFW_KEY_R:
-            gScale += glm::vec3(SCALE_STEP);             // Uniformly enlarge the chair.
-            break;
-
-        case GLFW_KEY_F:
-            gScale -= glm::vec3(SCALE_STEP);             // Uniformly shrink the chair.
-            gScale = glm::max(gScale, glm::vec3(MIN_SCALE));
-            break;
-
-        default:
-            break;
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Program entry point.
-// -----------------------------------------------------------------------------
-int main(int argc, char* argv[])
-{
-    const std::filesystem::path objPath = findOBJPath(argc, argv);
-
-    if (glfwInit() != GLFW_TRUE)
-    {
-        std::cerr << "Failed to initialize GLFW.\n";
-        return 1;
-    }
-
-    // Request the OpenGL 3.3 Core Profile used by the shaders below.
+    //OpenGL 3.3
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
+
+    //mac wissem
 #ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    GLFWwindow* window = glfwCreateWindow(
-        WINDOW_WIDTH,
-        WINDOW_HEIGHT,
-        "COMP 371 - Assignment 3 - Chair",
-        nullptr,
-        nullptr
-    );
 
-    if (window == nullptr)
+    //create window
+    GLFWwindow* window =
+        glfwCreateWindow(
+            WIDTH,
+            HEIGHT,
+            "COMP 371 - Assignment 3",
+            NULL,
+            NULL);
+
+
+    if (window == NULL)
     {
-        std::cerr << "Failed to create the GLFW window.\n";
+        std::cout << "Could not create window." << std::endl;
+
         glfwTerminate();
-        return 1;
+
+        return -1;
     }
 
-    glfwMakeContextCurrent(window);                       // Activate this window's OpenGL context.
-    glfwSetKeyCallback(window, keyCallback);             // Register keyboard controls.
-    glfwSwapInterval(1);                                 // Enable V-sync.
+    glfwMakeContextCurrent(window);
+    glfwSetKeyCallback(window, keyCallback);
 
-    glewExperimental = GL_TRUE;                          // Needed for core-profile function loading.
-    const GLenum glewStatus = glewInit();
-    if (glewStatus != GLEW_OK)
+
+    //initialize GLEW
+    glewExperimental = GL_TRUE;
+
+    if (glewInit() != GLEW_OK)
     {
-        std::cerr << "Failed to initialize GLEW: "
-                  << reinterpret_cast<const char*>(glewGetErrorString(glewStatus))
-                  << '\n';
-        glfwDestroyWindow(window);
+        std::cout << "Could not initialize GLEW." << std::endl;
+
         glfwTerminate();
-        return 1;
+
+        return -1;
     }
 
-    // GLEW may generate one harmless GL_INVALID_ENUM during core-profile
-    // initialization.  Clear it before ordinary rendering starts.
-    glGetError();
 
+    //load chair OBJ
     std::vector<Vertex> vertices;
-    if (!loadOBJ(objPath, vertices))
+
+    if (!loadOBJ("chair.obj", vertices))
     {
-        std::cerr << "Expected Blender to export chair.obj before running OpenGL.\n";
-        glfwDestroyWindow(window);
         glfwTerminate();
-        return 1;
+
+        return -1;
     }
 
-    normalizeModel(vertices);                             // Center model for in-place rotation.
 
-    GLuint shaderProgram = createShaderProgram();
-    if (shaderProgram == 0)
-    {
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
+    //center chair so that rotation happens around itself
+    centerModel(vertices);
 
-    GLuint vao = 0;
-    GLuint vbo = 0;
 
-    glGenVertexArrays(1, &vao);                          // Create a Vertex Array Object.
-    glGenBuffers(1, &vbo);                               // Create a Vertex Buffer Object.
+    //VAO and VBO
 
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    GLuint VAO;
+    GLuint VBO;
+
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+
+
+    glBindVertexArray(VAO);
+
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
 
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(vertices.size() * sizeof(Vertex)),
+        vertices.size() * sizeof(Vertex),
         vertices.data(),
-        GL_STATIC_DRAW
-    );
+        GL_STATIC_DRAW);
+
 
     glVertexAttribPointer(
-        0,                                                // Shader attribute location.
-        3,                                                // X, Y, Z.
+        0,
+        3,
         GL_FLOAT,
         GL_FALSE,
         sizeof(Vertex),
-        reinterpret_cast<void*>(0)
-    );
+        (void*)0);
+
+
     glEnableVertexAttribArray(0);
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
 
-    glEnable(GL_DEPTH_TEST);                              // Correctly hide geometry behind closer surfaces.
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);            // Assignment requirement: wireframe display.
-    glLineWidth(1.0f);                                   // 1.0 is portable across OpenGL implementations.
+    //shaders
 
-    const GLint mvpLocation = glGetUniformLocation(shaderProgram, "uMVP");
-    if (mvpLocation < 0)
-    {
-        std::cerr << "Could not find shader uniform uMVP.\n";
-        glDeleteBuffers(1, &vbo);
-        glDeleteVertexArrays(1, &vao);
-        glDeleteProgram(shaderProgram);
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
+    GLuint shaderProgram = createShaderProgram();
 
-    std::cout << "\n============================================================\n";
-    std::cout << "COMP 371 - Assignment 3 - Chair\n";
-    std::cout << "Reema Aboudraz  - 40253549\n";
-    std::cout << "Wissem Oumsalem - 40291712\n";
-    std::cout << "------------------------------------------------------------\n";
-    std::cout << "Loaded OBJ: " << objPath << "\n\n";
-    std::cout << "W / S : translate up / down\n";
-    std::cout << "A / D : translate left / right\n";
-    std::cout << "Q / E : rotate +30 / -30 degrees around Z\n";
-    std::cout << "R / F : scale up / down\n";
-    std::cout << "ESC   : quit\n";
-    std::cout << "============================================================\n\n";
+    GLint MVPLocation =
+        glGetUniformLocation(shaderProgram, "MVP");
 
+
+    //enable the depth testing
+    glEnable(GL_DEPTH_TEST);
+
+
+    //display triangles as wireframe
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+
+    // Main rendering loop
     while (!glfwWindowShouldClose(window))
     {
-        int framebufferWidth = 0;
-        int framebufferHeight = 0;
-        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        glClearColor(
+            0.1f,
+            0.1f,
+            0.1f,
+            1.0f);
 
-        // A minimized window can temporarily have a zero-sized framebuffer.
-        // Avoid division by zero in the perspective aspect ratio.
-        if (framebufferWidth <= 0 || framebufferHeight <= 0)
-        {
-            glfwPollEvents();
-            continue;
-        }
 
-        glViewport(0, 0, framebufferWidth, framebufferHeight);
-        glClearColor(0.07f, 0.08f, 0.10f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClear(
+            GL_COLOR_BUFFER_BIT |
+            GL_DEPTH_BUFFER_BIT);
 
-        // Model = Translation * Rotation * Scale.
-        // Because normalizeModel() first centered the geometry at the origin,
-        // rotation and scaling occur around the chair itself.  Translation is
-        // then preserved, so a rotated chair stays at its current screen place.
-        glm::mat4 model(1.0f);
-        model = glm::translate(model, gTranslation);
+
+        //Model matrix
+
+        glm::mat4 model =
+            glm::mat4(1.0f);
+
+
+        //Translation
+        model = glm::translate(
+            model,
+            glm::vec3(
+                positionX,
+                positionY,
+                0.0f));
+
+
+        //Rotation
         model = glm::rotate(
             model,
-            glm::radians(gRotationZ),
-            glm::vec3(0.0f, 0.0f, 1.0f)
-        );
-        model = glm::scale(model, gScale);
+            glm::radians(rotationZ),
+            glm::vec3(
+                0.0f,
+                0.0f,
+                1.0f));
 
-        // Three-quarter camera view makes depth of the chair visible.
-        const glm::mat4 view = glm::lookAt(
-            glm::vec3(4.2f, -6.2f, 3.4f),
-            glm::vec3(0.0f, 0.0f, 0.25f),
-            glm::vec3(0.0f, 0.0f, 1.0f)
-        );
 
-        const float aspect = static_cast<float>(framebufferWidth)
-                           / static_cast<float>(framebufferHeight);
+        //Scaling
+        model = glm::scale(
+            model,
+            glm::vec3(
+                scaleValue,
+                scaleValue,
+                scaleValue));
 
-        const glm::mat4 projection = glm::perspective(
-            glm::radians(45.0f),
-            aspect,
-            0.1f,
-            100.0f
-        );
 
-        const glm::mat4 mvp = projection * view * model;
+        // Camera
+        glm::mat4 view =
+            glm::lookAt(
+                glm::vec3(
+                    4.0f,
+                    -6.0f,
+                    3.0f),
 
+                glm::vec3(
+                    0.0f,
+                    0.0f,
+                    0.0f),
+
+                glm::vec3(
+                    0.0f,
+                    0.0f,
+                    1.0f));
+
+
+        //Perspective projection
+        glm::mat4 projection =
+            glm::perspective(
+                glm::radians(45.0f),
+                (float)WIDTH / (float)HEIGHT,
+                0.1f,
+                100.0f);
+
+
+        // Complete transformation
+        glm::mat4 MVP =
+            projection * view * model;
+
+
+        // Draw chair
         glUseProgram(shaderProgram);
-        glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, glm::value_ptr(mvp));
 
-        glBindVertexArray(vao);
+
+        glUniformMatrix4fv(
+            MVPLocation,
+            1,
+            GL_FALSE,
+            glm::value_ptr(MVP));
+
+
+        glBindVertexArray(VAO);
+
+
         glDrawArrays(
             GL_TRIANGLES,
             0,
-            static_cast<GLsizei>(vertices.size())
-        );
-        glBindVertexArray(0);
+            vertices.size());
 
-        glfwSwapBuffers(window);                          // Present completed frame.
-        glfwPollEvents();                                // Process keyboard/window events.
+
+        //Display frame
+        glfwSwapBuffers(window);
+
+        glfwPollEvents();
     }
 
-    // Release GPU and GLFW resources in reverse order of creation.
-    glDeleteBuffers(1, &vbo);
-    glDeleteVertexArrays(1, &vao);
+
+    //Cleanup
+
+    glDeleteBuffers(1, &VBO);
+    glDeleteVertexArrays(1, &VAO);
     glDeleteProgram(shaderProgram);
+
 
     glfwDestroyWindow(window);
     glfwTerminate();
-
     return 0;
 }

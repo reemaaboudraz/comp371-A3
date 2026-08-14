@@ -35,10 +35,7 @@ from mathutils import Vector
 # -----------------------------------------------------------------------------
 # When this script is opened from disk, Blender defines __file__.  The fallback
 # keeps the script usable if it is pasted into Blender's Text Editor manually.
-try:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    SCRIPT_DIR = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.path.expanduser("~")
+SCRIPT_DIR = r"C:\Users\Reema\comp371-A3\comp371-A3\Blender"
 
 # The repository layout has Blender/ and OpenGL/ as sibling folders.
 PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir))
